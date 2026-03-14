@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ラウンド変更監視</title>
+  <style>
+    :root {
+      --bg: #f3f6f4;
+      --panel: #ffffff;
+      --line: #c7d6cb;
+      --accent: #2f7a4f;
+      --accent-soft: #e5f2e9;
+      --danger: #b33939;
+      --text: #1c2c22;
+    }
+
+    body {
+      margin: 0;
+      width: 460px;
+      color: var(--text);
+      background: radial-gradient(circle at top right, #dff0e4 0%, var(--bg) 58%);
+      font-family: "Yu Gothic UI", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+    }
+
+    .wrap {
+      padding: 12px;
+    }
+
+    .title {
+      margin: 0 0 8px;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .status {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .badge {
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 11px;
+    }
+
+    .running {
+      background: #d4f1dd;
+      color: #1f6b3f;
+    }
+
+    .stopped {
+      background: #f5dddd;
+      color: #7c2222;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+
+    .panel h2 {
+      margin: 0 0 8px;
+      font-size: 13px;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+
+    .controls label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    input[type="number"], select {
+      font-size: 12px;
+      padding: 4px 6px;
+      border: 1px solid #a9beaf;
+      border-radius: 4px;
+      background: #fff;
+      min-width: 74px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+
+    th, td {
+      border: 1px solid #d2dfd6;
+      padding: 5px;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      background: #eef6f0;
+      font-weight: 700;
+    }
+
+    .tbl-wrap {
+      max-height: 180px;
+      overflow: auto;
+      border: 1px solid #d2dfd6;
+      border-radius: 6px;
+    }
+
+    .buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+
+    button {
+      border: none;
+      border-radius: 6px;
+      padding: 9px 6px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      background: #dde9e1;
+      color: #1b3326;
+    }
+
+    #startBtn {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    #stopBtn {
+      background: var(--danger);
+      color: #fff;
+    }
+
+    .hint {
+      font-size: 11px;
+      color: #355140;
+      margin-top: 6px;
+    }
+
+    .logs {
+      max-height: 110px;
+      overflow: auto;
+      font-size: 11px;
+      line-height: 1.4;
+      background: #f8fbf9;
+      border: 1px solid #dbe7de;
+      border-radius: 6px;
+      padding: 6px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 class="title">車検ラウンド変更 自動監視</h1>
+
+    <div class="status">
+      <div id="statusText">状態を確認中...</div>
+      <div id="statusBadge" class="badge stopped">停止中</div>
+    </div>
+
+    <div class="panel">
+      <h2>監視設定</h2>
+      <div class="controls">
+        <label>最小間隔(ms)
+          <input id="minMs" type="number" min="600" step="100" value="1700">
+        </label>
+        <label>最大間隔(ms)
+          <input id="maxMs" type="number" min="900" step="100" value="2400">
+        </label>
+      </div>
+      <div class="hint">2秒前後で揺らす設定: 1700〜2400ms を推奨</div>
+    </div>
+
+    <div class="panel">
+      <h2>対象行の選択</h2>
+      <div style="margin-bottom:8px; display:flex; gap:6px;">
+        <button id="reloadBtn" style="flex:1;">ページから再読込</button>
+        <button id="selectAllBtn" style="flex:1;">全選択</button>
+        <button id="clearAllBtn" style="flex:1;">解除</button>
+      </div>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>対象</th>
+              <th>検査日</th>
+              <th>車種</th>
+              <th>現在R</th>
+              <th>変更先R</th>
+            </tr>
+          </thead>
+          <tbody id="rowsBody"></tbody>
+        </table>
+      </div>
+      <div class="hint">行ごとに「変更先R」を指定できます（複数同時設定可）</div>
+    </div>
+
+    <div class="panel">
+      <h2>操作</h2>
+      <div class="buttons">
+        <button id="startBtn">監視開始</button>
+        <button id="stopBtn">停止</button>
+        <button id="refreshStatusBtn">状態更新</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>ログ</h2>
+      <div id="logs" class="logs">-</div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
