@@ -71,6 +71,7 @@ async function handleStart(msg) {
     automationState: {
       phase: "idle",
       activeTaskId: null,
+      targetRound: null,
       completedTaskIds: [],
       failCount: 0,
       lastError: ""
@@ -188,11 +189,13 @@ async function processListPageIdle(tasks, state) {
         ...state,
         phase: "change-form",
         activeTaskId: task.id,
+        targetRound: null,
         failCount: 0,
         lastError: ""
       }
     });
-    await addLog(`対象検知: ${task.vehicleType} ${task.date} ${task.fromRound}R -> ${task.toRound}R`);
+    const candidatesText = formatRoundCandidates(task);
+    await addLog(`対象検知: ${task.vehicleType} ${task.date} ${task.fromRound}R -> ${candidatesText}`);
     focusByTabAndActivate(matched.linkElement);
     return true;
   }
@@ -219,16 +222,17 @@ async function processChangeForm(tasks, state) {
     return;
   }
 
-  const desiredText = `${task.toRound}ラウンド`;
-  const option = Array.from(select.options).find((o) => normalizeText(o.textContent).includes(desiredText));
+  const candidates = getTaskRoundCandidates(task);
+  const selectedCandidate = chooseFirstAvailableCandidate(select, candidates);
 
-  if (!option) {
-    await addLog(`希望ラウンド ${desiredText} が未表示: 戻って再読込します`);
+  if (!selectedCandidate) {
+    await addLog(`希望ラウンド ${formatRoundCandidates(task)} が未表示: 戻って再読込します`);
     await storageSet({
       automationState: {
         ...state,
         phase: "idle",
         activeTaskId: null,
+        targetRound: null,
         failCount: 0,
         lastError: ""
       }
@@ -237,23 +241,36 @@ async function processChangeForm(tasks, state) {
     return;
   }
 
-  select.value = option.value;
-  select.dispatchEvent(new Event("input", { bubbles: true }));
-  select.dispatchEvent(new Event("change", { bubbles: true }));
+  const desiredText = `${selectedCandidate.round}ラウンド`;
+  const selected = await chooseRoundByKeyboard(select, selectedCandidate.option.value, desiredText);
+  if (!selected) {
+    await addLog(`希望ラウンド ${desiredText} の選択に失敗しました`);
+    return;
+  }
+
+  if (candidates.length > 1 && selectedCandidate.round !== candidates[0]) {
+    await addLog(`第1候補が不可のため第2候補 ${selectedCandidate.round}R を採用`);
+  }
 
   const changeBtn = findActionButton(["変更", "変更実行", "次へ"]);
   await storageSet({
     automationState: {
       ...state,
       phase: "awaiting-confirm",
+      targetRound: selectedCandidate.round,
       failCount: 0,
       lastError: ""
     }
   });
 
   if (changeBtn) {
-    await addLog(`変更操作実行: ${desiredText}`);
-    focusByTabAndActivate(changeBtn);
+    if (select.options.length <= 1) {
+      await addLog("候補1件: Tab2回で変更ボタンへ移動して実行");
+      await performTabThenEnter(2, select, (el) => isChangeButton(el));
+    } else {
+      await addLog(`変更操作実行: ${desiredText}`);
+      focusByTabAndActivate(changeBtn);
+    }
     return;
   }
 
@@ -318,11 +335,12 @@ async function processVerifying(tasks, state) {
   }
 
   const entries = parseListPageEntries();
+  const expectedRound = Number(state.targetRound || task.toRound);
   const success = entries.some((e) => {
     if (task.reserveNo && e.reserveNo) {
-      return String(task.reserveNo) === String(e.reserveNo) && e.currentRound === Number(task.toRound);
+      return String(task.reserveNo) === String(e.reserveNo) && e.currentRound === expectedRound;
     }
-    return e.date === task.date && e.vehicleType === task.vehicleType && e.currentRound === Number(task.toRound);
+    return e.date === task.date && e.vehicleType === task.vehicleType && e.currentRound === expectedRound;
   });
 
   if (!success) {
@@ -338,13 +356,14 @@ async function processVerifying(tasks, state) {
     ...state,
     phase: "idle",
     activeTaskId: null,
+    targetRound: null,
     completedTaskIds: Array.from(completed),
     failCount: 0,
     lastError: ""
   };
 
   await storageSet({ automationState: nextState });
-  await addLog(`完了: ${task.vehicleType} ${task.date} ${task.fromRound}R -> ${task.toRound}R`);
+  await addLog(`完了: ${task.vehicleType} ${task.date} ${task.fromRound}R -> ${expectedRound}R`);
 
   const remaining = tasks.filter((t) => !completed.has(t.id));
   if (remaining.length === 0) {
@@ -377,6 +396,7 @@ async function stopAutomation(reason) {
     automationState: {
       phase: "idle",
       activeTaskId: null,
+      targetRound: null,
       completedTaskIds: [],
       failCount: 0,
       lastError: ""
@@ -452,6 +472,42 @@ function parseListPageEntries() {
   return result;
 }
 
+function chooseFirstAvailableCandidate(select, candidates) {
+  const options = Array.from(select.options || []);
+  for (const round of candidates) {
+    const desiredText = `${round}ラウンド`;
+    const option = options.find((o) => normalizeText(o.textContent).includes(desiredText));
+    if (option) {
+      return { round, option };
+    }
+  }
+  return null;
+}
+
+function getTaskRoundCandidates(task) {
+  const first = Number(task.toRound) || 0;
+  const second = Number(task.toRoundSecondary) || 0;
+  const result = [];
+  if (first > 0) {
+    result.push(first);
+  }
+  if (second > 0 && second !== first) {
+    result.push(second);
+  }
+  return result;
+}
+
+function formatRoundCandidates(task) {
+  const list = getTaskRoundCandidates(task);
+  if (list.length === 0) {
+    return "(候補なし)";
+  }
+  if (list.length === 1) {
+    return `${list[0]}R`;
+  }
+  return `${list[0]}R/${list[1]}R`;
+}
+
 function isEntryMatch(task, entry) {
   if (task.reserveNo && entry.reserveNo) {
     return String(task.reserveNo) === String(entry.reserveNo);
@@ -512,7 +568,7 @@ function findActionButton(candidates) {
   return null;
 }
 
-function focusByTabAndActivate(target) {
+function focusByTabAndActivate(target, shouldActivate = true) {
   if (!target) {
     return;
   }
@@ -531,8 +587,10 @@ function focusByTabAndActivate(target) {
   }
 
   target.focus();
-  dispatchSpace(target);
-  target.click();
+  if (shouldActivate) {
+    dispatchSpace(target);
+    target.click();
+  }
 }
 
 function dispatchTab() {
@@ -550,7 +608,17 @@ function dispatchEnter(target) {
   target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
 }
 
-async function performTabThenEnter(tabCount, preferredStart, stopWhenFocused) {
+function dispatchArrowDown(target) {
+  target.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", keyCode: 40, bubbles: true }));
+  target.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowDown", code: "ArrowDown", keyCode: 40, bubbles: true }));
+}
+
+function dispatchArrowUp(target) {
+  target.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", code: "ArrowUp", keyCode: 38, bubbles: true }));
+  target.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp", code: "ArrowUp", keyCode: 38, bubbles: true }));
+}
+
+async function performTabThenEnter(tabCount, preferredStart, stopWhenFocused, shouldActivate = true) {
   const focusStart = preferredStart || (document.activeElement && document.activeElement !== document.body
     ? document.activeElement
     : firstFocusable() || document.body);
@@ -562,10 +630,14 @@ async function performTabThenEnter(tabCount, preferredStart, stopWhenFocused) {
 
   if (typeof stopWhenFocused === "function" && stopWhenFocused(document.activeElement)) {
     const current = document.activeElement || document.body;
-    await addLog(`Enter実行(開始時到達): ${describeElement(current)}`);
-    dispatchEnter(current);
-    if (current && typeof current.click === "function") {
-      current.click();
+    if (shouldActivate) {
+      await addLog(`Enter実行(開始時到達): ${describeElement(current)}`);
+      dispatchEnter(current);
+      if (current && typeof current.click === "function") {
+        current.click();
+      }
+    } else {
+      await addLog(`フォーカス到達(開始時): ${describeElement(current)}`);
     }
     return;
   }
@@ -581,10 +653,14 @@ async function performTabThenEnter(tabCount, preferredStart, stopWhenFocused) {
   }
 
   const target = document.activeElement || document.body;
-  await addLog(`Enter実行: ${describeElement(target)}`);
-  dispatchEnter(target);
-  if (target && typeof target.click === "function") {
-    target.click();
+  if (shouldActivate) {
+    await addLog(`Enter実行: ${describeElement(target)}`);
+    dispatchEnter(target);
+    if (target && typeof target.click === "function") {
+      target.click();
+    }
+  } else {
+    await addLog(`フォーカス到達: ${describeElement(target)}`);
   }
 }
 
@@ -661,6 +737,62 @@ function isBackButton(el) {
   return name === "cmdback" || text.includes("戻る");
 }
 
+function isChangeButton(el) {
+  if (!el) {
+    return false;
+  }
+  const text = normalizeText(el.textContent || el.value || "");
+  return text.includes("変更") || text.includes("次へ");
+}
+
+async function chooseRoundByKeyboard(select, desiredValue, desiredText) {
+  if (!select) {
+    return false;
+  }
+
+  if (typeof select.focus === "function") {
+    select.focus();
+    await sleep(TAB_STEP_DELAY_MS);
+  }
+
+  await addLog(`プルダウン操作開始: ${desiredText}`);
+  dispatchEnter(select);
+  await sleep(TAB_STEP_DELAY_MS);
+
+  const options = Array.from(select.options || []);
+  const currentIndex = Math.max(0, select.selectedIndex);
+  const targetIndex = options.findIndex((o) => String(o.value) === String(desiredValue));
+  if (targetIndex < 0) {
+    return false;
+  }
+
+  const step = targetIndex >= currentIndex ? 1 : -1;
+  const steps = Math.abs(targetIndex - currentIndex);
+
+  for (let i = 0; i < steps; i += 1) {
+    if (step > 0) {
+      dispatchArrowDown(select);
+    } else {
+      dispatchArrowUp(select);
+    }
+
+    const nextIndex = currentIndex + step * (i + 1);
+    select.selectedIndex = nextIndex;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await addLog(`プルダウン移動 ${i + 1}/${steps}: ${normalizeText(options[nextIndex].textContent)}`);
+    await sleep(TAB_STEP_DELAY_MS);
+  }
+
+  select.value = String(desiredValue);
+  select.dispatchEvent(new Event("input", { bubbles: true }));
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await addLog(`プルダウン確定: ${desiredText}`);
+  dispatchEnter(select);
+  await sleep(TAB_STEP_DELAY_MS);
+  return true;
+}
+
 function describeElement(el) {
   if (!el) {
     return "(none)";
@@ -702,6 +834,7 @@ function normalizeState(raw) {
   return {
     phase: raw.phase || "idle",
     activeTaskId: raw.activeTaskId || null,
+    targetRound: Number(raw.targetRound) || null,
     completedTaskIds: Array.isArray(raw.completedTaskIds) ? raw.completedTaskIds : [],
     failCount: Number(raw.failCount) || 0,
     lastError: raw.lastError || ""

@@ -46,7 +46,7 @@ async function reloadRowsFromPage() {
   const frameId = await resolveAutomationFrameId(tab.id);
   const res = await sendTabMessage(tab.id, { action: "scrapeRows" }, frameId);
   if (!res || !res.ok) {
-    rowsBody.innerHTML = "<tr><td colspan='5'>対象ページで実行できません。拡張機能の再読込後に対象タブを再表示してください。</td></tr>";
+    rowsBody.innerHTML = "<tr><td colspan='6'>対象ページで実行できません。拡張機能の再読込後に対象タブを再表示してください。</td></tr>";
     return;
   }
 
@@ -56,7 +56,7 @@ async function reloadRowsFromPage() {
 
 function renderRows() {
   if (state.pageRows.length === 0) {
-    rowsBody.innerHTML = "<tr><td colspan='5'>候補が見つかりませんでした</td></tr>";
+    rowsBody.innerHTML = "<tr><td colspan='6'>候補が見つかりませんでした</td></tr>";
     return;
   }
 
@@ -77,8 +77,13 @@ function renderRows() {
       <td>${escapeHtml(row.vehicleType)}</td>
       <td>${row.currentRound}R</td>
       <td>
-        <select class="to-round" data-key="${escapeHtml(key)}">
-          ${renderRoundOptions(row.currentRound, existing ? Number(existing.toRound) : null)}
+        <select class="to-round-primary" data-key="${escapeHtml(key)}">
+          ${renderRoundOptions(row.currentRound, existing ? Number(existing.toRound) : null, false)}
+        </select>
+      </td>
+      <td>
+        <select class="to-round-secondary" data-key="${escapeHtml(key)}">
+          ${renderRoundOptions(row.currentRound, existing ? Number(existing.toRoundSecondary) : null, true)}
         </select>
       </td>
     `;
@@ -86,8 +91,12 @@ function renderRows() {
   }
 }
 
-function renderRoundOptions(fromRound, selectedRound) {
+function renderRoundOptions(fromRound, selectedRound, includeEmpty) {
   let html = "";
+  if (includeEmpty) {
+    const emptySelected = selectedRound ? "" : "selected";
+    html += `<option value="" ${emptySelected}>-</option>`;
+  }
   for (let r = 1; r <= 4; r += 1) {
     if (r === Number(fromRound)) {
       continue;
@@ -106,6 +115,7 @@ async function startAutomation() {
   const frameId = await resolveAutomationFrameId(tab.id);
 
   const tasks = collectTasksFromUi();
+
   if (tasks.length === 0) {
     alert("対象が未選択です。チェックを入れてください。");
     return;
@@ -198,21 +208,28 @@ function collectTasksFromUi() {
       continue;
     }
 
-    const select = document.querySelector(`.to-round[data-key="${cssEscape(key)}"]`);
-    const toRound = Number(select ? select.value : 0);
+    const primarySelect = document.querySelector(`.to-round-primary[data-key="${cssEscape(key)}"]`);
+    const secondarySelect = document.querySelector(`.to-round-secondary[data-key="${cssEscape(key)}"]`);
+    const toRound = Number(primarySelect ? primarySelect.value : 0);
     if (!toRound) {
       continue;
     }
 
+    let toRoundSecondary = Number(secondarySelect ? secondarySelect.value : 0);
+    if (!toRoundSecondary || toRoundSecondary === toRound) {
+      toRoundSecondary = 0;
+    }
+
     result.push({
-      id: `${key}->${toRound}`,
+      id: `${key}->${toRound}${toRoundSecondary ? `-${toRoundSecondary}` : ""}`,
       enabled: true,
       date: row.date,
       vehicleType: row.vehicleType,
       reserveNo: row.reserveNo || "",
       inspectCd: row.inspectCd || "",
       fromRound: Number(row.currentRound),
-      toRound
+      toRound,
+      toRoundSecondary
     });
   }
 
